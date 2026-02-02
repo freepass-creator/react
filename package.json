@@ -1,6 +1,6 @@
 {
-  "name": "freepass-erp",
-  "version": "1.0.0",
+  "name": "prepass-mobility-erp",
+  "version": "0.1.0",
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
