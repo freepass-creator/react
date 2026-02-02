@@ -175,28 +175,31 @@ export default function App() {
   const [activeFilterColumn, setActiveFilterColumn] = useState(null);
   const [triggerRect, setTriggerRect] = useState(null);
   const [toastVisible, setToastVisible] = useState(false);
+  
+  // 빌드 타임 안전성을 위한 초기 정보 설정
   const [managerInfo, setManagerInfo] = useState({
-    company: localStorage.getItem('erp_manager_company') || '',
-    nameTitle: localStorage.getItem('erp_manager_nameTitle') || '',
-    phone: localStorage.getItem('erp_manager_phone') || '',
-    includeAccount: localStorage.getItem('erp_manager_includeAccount') === 'true'
+    company: (typeof window !== 'undefined' ? localStorage.getItem('erp_manager_company') : '') || '',
+    nameTitle: (typeof window !== 'undefined' ? localStorage.getItem('erp_manager_nameTitle') : '') || '',
+    phone: (typeof window !== 'undefined' ? localStorage.getItem('erp_manager_phone') : '') || '',
+    includeAccount: (typeof window !== 'undefined' ? localStorage.getItem('erp_manager_includeAccount') === 'true' : false)
   });
   const [copySuccess, setCopySuccess] = useState({ link: false, summary: false, account: false });
 
   // Refs
   const appRef = useRef(null);
 
-  // Initialize Firebase
+  // Initialize Firebase (빌드 시 window 객체 체크)
   useEffect(() => {
-    const firebaseConfigStr = window.__firebase_config;
+    const firebaseConfigStr = typeof window !== 'undefined' ? window.__firebase_config : null;
     if (firebaseConfigStr) {
-      const firebaseConfig = JSON.parse(firebaseConfigStr);
+      const firebaseConfig = typeof firebaseConfigStr === 'string' ? JSON.parse(firebaseConfigStr) : firebaseConfigStr;
       const app = initializeApp(firebaseConfig);
       const auth = getAuth(app);
       
       const initAuth = async () => {
-        if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
-          await signInWithCustomToken(auth, window.__initial_auth_token);
+        const authToken = typeof window !== 'undefined' ? window.__initial_auth_token : null;
+        if (authToken) {
+          await signInWithCustomToken(auth, authToken);
         } else {
           await signInAnonymously(auth);
         }
@@ -438,6 +441,21 @@ export default function App() {
     setTimeout(() => setCopySuccess(p => ({ ...p, account: false })), 2000);
   };
 
+  // [정밀 수정] 차량 클릭 핸들러: 기존 거 확 사라지고(duration-0) 새 거 다시 나오는 느낌 연출
+  const handleCarSelect = (item) => {
+    if (selectedCar?.차량_번호 === item.차량_번호) {
+      setSelectedCar(null);
+    } else if (selectedCar) {
+      // 기존 상품이 열려있을 때 다른 걸 누르면 즉시 닫고(null) 찰나의 지연 후 다시 열기
+      setSelectedCar(null);
+      setTimeout(() => {
+        setSelectedCar(item);
+      }, 20); // 20ms의 짧은 공백이 '전환' 느낌을 확실히 줌
+    } else {
+      setSelectedCar(item);
+    }
+  };
+
   // Render Helpers
   const renderSidebarButton = (id, label) => {
     const isActive = activeSidebarPopup === id;
@@ -603,7 +621,7 @@ export default function App() {
                 {filteredData.map(item => (
                   <tr 
                     key={item.차량_번호} 
-                    onClick={(e) => { e.stopPropagation(); setSelectedCar(item); }} 
+                    onClick={(e) => { e.stopPropagation(); handleCarSelect(item); }} 
                     className={`hover:bg-slate-50 cursor-pointer divide-x divide-slate-50 h-[52px] transition-colors ${selectedCar?.차량_번호 === item.차량_번호 ? 'bg-blue-50 font-bold' : ''}`}
                   >
                     <td className="p-2 text-center">{getStatusBadgeHtml(item.차량_상태, "상태")}</td>
@@ -631,11 +649,12 @@ export default function App() {
             </table>
           </div>
 
-          {/* 상세 페이지 Drawer */}
+          {/* 상세 페이지 Drawer: 닫힐 때duration-0(확 사라짐), 열릴 때duration-300(새롭게 나옴), key적용(즉시 갱신) */}
           <div 
             id="detail-drawer" 
+            key={selectedCar?.차량_번호 || 'empty'}
             onClick={(e) => e.stopPropagation()} 
-            className={`absolute right-0 top-0 h-full w-[440px] bg-white natural-shadow z-[100] flex flex-col border-l border-slate-200 transition-transform duration-300 ${selectedCar ? 'translate-x-0' : 'translate-x-full'}`}
+            className={`absolute right-0 top-0 h-full w-[440px] bg-white natural-shadow z-[100] flex flex-col border-l border-slate-200 transition-transform ${selectedCar ? 'translate-x-0 duration-300 ease-out' : 'translate-x-full duration-0'}`}
           >
             {selectedCar && (
               <>
@@ -769,7 +788,7 @@ export default function App() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setManagerInfo(p => ({ ...p, company: val }));
-                            localStorage.setItem('erp_manager_company', val);
+                            if (typeof window !== 'undefined') localStorage.setItem('erp_manager_company', val);
                           }}
                           className="p-2.5 border border-slate-200 outline-none font-bold focus:border-slate-800"
                         />
@@ -780,7 +799,7 @@ export default function App() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setManagerInfo(p => ({ ...p, nameTitle: val }));
-                            localStorage.setItem('erp_manager_nameTitle', val);
+                            if (typeof window !== 'undefined') localStorage.setItem('erp_manager_nameTitle', val);
                           }}
                           className="p-2.5 border border-slate-200 outline-none font-bold focus:border-slate-800"
                         />
@@ -791,7 +810,7 @@ export default function App() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setManagerInfo(p => ({ ...p, phone: val }));
-                            localStorage.setItem('erp_manager_phone', val);
+                            if (typeof window !== 'undefined') localStorage.setItem('erp_manager_phone', val);
                           }}
                           className="p-2.5 border border-slate-200 outline-none font-bold focus:border-slate-800 col-span-2"
                         />
@@ -816,7 +835,7 @@ export default function App() {
                               onChange={(e) => {
                                 const val = e.target.checked;
                                 setManagerInfo(p => ({ ...p, includeAccount: val }));
-                                localStorage.setItem('erp_manager_includeAccount', String(val));
+                                if (typeof window !== 'undefined') localStorage.setItem('erp_manager_includeAccount', String(val));
                               }}
                               className="w-4 h-4 accent-slate-800" 
                             />
@@ -829,7 +848,7 @@ export default function App() {
                 
                 {/* 하단 액션 버튼 */}
                 <div className="p-3 border-t bg-white flex-shrink-0 grid grid-cols-2 gap-3">
-                  <button className="py-3.5 bg-white border border-slate-300 text-slate-400 font-bold text-[11px] uppercase tracking-widest apply-btn-shadow flex items-center justify-center gap-2 cursor-default">
+                  <button className="py-3.5 bg-white border border-slate-300 font-black text-[11px] uppercase tracking-widest apply-btn-shadow flex items-center justify-center gap-2 cursor-default">
                     <Share2 size={16} /> 고객용 링크 (준비중)
                   </button>
                   <button 
@@ -856,7 +875,7 @@ export default function App() {
             const label = id==='period'?'기간':id==='rental'?'대여료':id==='deposit'?'보증금':id==='mileage'?'주행거리':'연식';
             const opts = id==='period'?['6M','12M','24M','36M','48M','60M']:id==='rental'?rentalOptions:id==='deposit'?depositOptions:id==='mileage'?mileageOptions:yearOptions;
             const popupHeight = 310;
-            const topPos = Math.min(triggerRect.top, window.innerHeight - popupHeight - 10);
+            const topPos = Math.min(triggerRect.top, (typeof window !== 'undefined' ? window.innerHeight : 800) - popupHeight - 10);
             
             return (
               <div 
@@ -921,7 +940,7 @@ export default function App() {
               return acc;
             }, {});
             const sortedOptions = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-            const leftPos = Math.min(triggerRect.left, window.innerWidth - 270);
+            const leftPos = Math.min(triggerRect.left, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 270);
 
             return (
               <div 
