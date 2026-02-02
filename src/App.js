@@ -11,7 +11,7 @@ import {
   getFirestore, doc, setDoc, getDoc 
 } from "firebase/firestore";
 
-// --- [CSS STYLES] --- (1픽셀도 생략하지 않고 그대로 유지)
+// --- [CSS STYLES] ---
 const styles = `
   @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap');
   
@@ -70,7 +70,7 @@ const styles = `
   .tactile-section { transition: background-color 0.2s ease; }
   .tactile-section:hover { background-color: #fcfdfe; }
 
-  /* [정밀 수정] 자연스럽고 고급스러운 슬라이드 곡선 */
+  /* [정밀 수정] 자연스럽고 고급스러운 슬라이드 곡선 (감속 위주) */
   .drawer-transition {
     transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
   }
@@ -91,7 +91,7 @@ const depositOptions = ['100만 이하', '100~200', '200~300', '300~400', '400~5
 const mileageOptions = ['1만km 미만', '1~3만', '3~5만', '5~10만', '10만km 이상'];
 const yearOptions = ['1년 이하', '1~3년', '3~5년', '5년 이상'];
 
-// --- [UTILITIES] --- (원본 로직 그대로 보존)
+// --- [UTILITIES] ---
 const parseNum = (str) => {
   if (!str) return 0;
   const val = parseInt(String(str).replace(/[^0-9]/g, ''));
@@ -164,7 +164,7 @@ const getStatusBadgeHtml = (text, type) => {
 
 // --- [MAIN COMPONENT] ---
 export default function App() {
-  // State (무삭제 유지)
+  // State
   const [rawData, setRawData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -186,13 +186,14 @@ export default function App() {
   });
 
   const [copySuccess, setCopySuccess] = useState({ link: false, summary: false, account: false });
+
   const appRef = useRef(null);
 
-  // Initialize Firebase & Manager Info (Build safe logic)
+  // Initialize Firebase & Manager Info
   useEffect(() => {
     if (typeof window !== 'undefined') {
       setManagerInfo({
-        company: localStorage.getItem('erp_manager_company') || '프리패스모빌리티',
+        company: localStorage.getItem('erp_manager_company') || '',
         nameTitle: localStorage.getItem('erp_manager_nameTitle') || '',
         phone: localStorage.getItem('erp_manager_phone') || '',
         includeAccount: localStorage.getItem('erp_manager_includeAccount') === 'true'
@@ -200,15 +201,26 @@ export default function App() {
 
       const firebaseConfigStr = window.__firebase_config;
       if (firebaseConfigStr) {
-        try {
-          const firebaseConfig = typeof firebaseConfigStr === 'string' ? JSON.parse(firebaseConfigStr) : firebaseConfigStr;
-          const app = initializeApp(firebaseConfig);
-          const auth = getAuth(app);
-          onAuthStateChanged(auth, (user) => {
-            if (user) fetchData(false);
-            else signInAnonymously(auth).then(() => fetchData(false)).catch(e => fetchData(false));
-          });
-        } catch (e) { fetchData(false); }
+        const firebaseConfig = typeof firebaseConfigStr === 'string' ? JSON.parse(firebaseConfigStr) : firebaseConfigStr;
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        
+        const initAuth = async () => {
+          const authToken = window.__initial_auth_token;
+          if (authToken) {
+            await signInWithCustomToken(auth, authToken);
+          } else {
+            await signInAnonymously(auth);
+          }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+          if (user) {
+            fetchData(false);
+          } else {
+            initAuth();
+          }
+        });
       } else {
         fetchData(false);
       }
@@ -222,26 +234,31 @@ export default function App() {
       const res = await fetch(`${CSV_URL}&cachebust=${Date.now()}`);
       const text = await res.text();
       const rows = text.split(/\r?\n/).filter(r => r.trim());
-      if (rows.length === 0) return;
       const headers = rows[0].split(',').map(h => h.trim().replace(/"/g, ''));
       
       const parsed = rows.slice(1).map(row => {
         const values = row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(v => v ? v.trim().replace(/^"|"$/g, '').replace(/""/g, '"') : "");
         return headers.reduce((obj, header, i) => { obj[header] = values[i] || ""; return obj; }, {});
       });
+      
       setRawData(parsed);
+
       if (isManual) {
         setToastVisible(true);
         setTimeout(() => setToastVisible(false), 2000);
       }
-    } catch (e) { console.error("데이터 로드 오류", e); } 
-    finally { if (isManual) setLoading(false); }
+    } catch (e) {
+      console.error("데이터 로드 오류", e);
+    } finally {
+      if (isManual) setLoading(false);
+    }
   };
 
-  // Filtered & Sorted Data Logic (무삭제 유지)
+  // Filtered & Sorted Data Logic
   const filteredData = useMemo(() => {
     let result = rawData.filter(item => {
       const matchesSearch = Object.values(item).some(v => String(v).toLowerCase().includes(searchTerm.toLowerCase()));
+      
       const matchesColumnFilters = Object.entries(columnFilters).every(([col, selectedValues]) => {
         if (!selectedValues || selectedValues.length === 0) return true;
         return selectedValues.includes(String(item[col]));
@@ -249,7 +266,7 @@ export default function App() {
 
       let matchesRental = true;
       if (sidebarFilters.rental.length > 0) {
-        const periodKey = \`금액_대여료_\${selectedPeriods[0] || '24M'}\`;
+        const periodKey = `금액_대여료_${selectedPeriods[0] || '24M'}`;
         const val = parseNum(item[periodKey]);
         matchesRental = sidebarFilters.rental.some(range => {
           if (range === '50만 이하') return val <= 500000;
@@ -258,12 +275,58 @@ export default function App() {
           return val >= low && val < high;
         });
       }
-      return matchesSearch && matchesColumnFilters && matchesRental;
+
+      let matchesDeposit = true;
+      if (sidebarFilters.deposit.length > 0) {
+        const periodKey = `금액_보증금_${selectedPeriods[0] || '24M'}`;
+        const val = parseNum(item[periodKey]);
+        matchesDeposit = sidebarFilters.deposit.some(range => {
+          if (range === '100만 이하') return val <= 1000000;
+          if (range === '500만 이상') return val >= 5000000;
+          const [low, high] = range.split('~').map(s => parseInt(s) * 10000);
+          return val >= low && val < high;
+        });
+      }
+
+      let matchesMileage = true;
+      if (sidebarFilters.mileage.length > 0) {
+        const val = parseNum(item.차량_현재주행거리);
+        matchesMileage = sidebarFilters.mileage.some(range => {
+          if (range === '1만km 미만') return val < 10000;
+          if (range === '10만km 이상') return val >= 100000;
+          if (range === '1~3만') return val >= 10000 && val < 30000;
+          if (range === '3~5만') return val >= 30000 && val < 50000;
+          if (range === '5~10만') return val >= 50000 && val < 100000;
+          return false;
+        });
+      }
+
+      let matchesYear = true;
+      if (sidebarFilters.year.length > 0) {
+        const rawDate = item.차량_최초등록일 || item['최초등록일'] || "";
+        if (!rawDate) matchesYear = false;
+        else {
+          try {
+            const regDate = new Date(String(rawDate).replace(/\./g, '-'));
+            const ageYears = (new Date() - regDate) / (1000 * 60 * 60 * 24 * 365);
+            matchesYear = sidebarFilters.year.some(range => {
+              if (range === '1년 이하') return ageYears <= 1;
+              if (range === '1~3년') return ageYears > 1 && ageYears <= 3;
+              if (range === '3~5년') return ageYears > 3 && ageYears <= 5;
+              if (range === '5년 이상') return ageYears > 5;
+              return false;
+            });
+          } catch (e) { matchesYear = false; }
+        }
+      }
+
+      return matchesSearch && matchesColumnFilters && matchesRental && matchesDeposit && matchesMileage && matchesYear;
     });
 
     if (sortConfig.key) {
       result.sort((a, b) => {
-        let aVal = a[sortConfig.key] || ""; let bVal = b[sortConfig.key] || "";
+        let aVal = a[sortConfig.key] || "";
+        let bVal = b[sortConfig.key] || "";
         if (sortConfig.key === '차량_현재주행거리' || sortConfig.key.includes('금액')) {
           aVal = parseNum(aVal); bVal = parseNum(bVal);
         }
@@ -284,20 +347,41 @@ export default function App() {
   };
 
   const toggleSidebarPopup = (id, e) => {
-    if (activeSidebarPopup === id) setActiveSidebarPopup(null);
-    else { setActiveSidebarPopup(id); setTriggerRect(e.currentTarget.getBoundingClientRect()); }
+    if (activeSidebarPopup === id) {
+      setActiveSidebarPopup(null);
+      setTriggerRect(null);
+    } else {
+      setActiveSidebarPopup(id);
+      setActiveFilterColumn(null);
+      setTriggerRect(e.currentTarget.getBoundingClientRect());
+    }
   };
 
   const toggleColumnFilter = (key, e) => {
-    if (activeFilterColumn === key) setActiveFilterColumn(null);
-    else { setActiveFilterColumn(key); setTriggerRect(e.currentTarget.getBoundingClientRect()); }
+    if (activeFilterColumn === key) {
+      setActiveFilterColumn(null);
+      setTriggerRect(null);
+    } else {
+      setActiveFilterColumn(key);
+      setActiveSidebarPopup(null);
+      setTriggerRect(e.currentTarget.getBoundingClientRect());
+    }
   };
 
-  const closeAllPopups = () => { setActiveSidebarPopup(null); setActiveFilterColumn(null); };
+  const closeAllPopups = () => {
+    setActiveSidebarPopup(null);
+    setActiveFilterColumn(null);
+    setTriggerRect(null);
+  };
 
-  const handleCarSelect = (item) => {
-    if (selectedCar?.차량_번호 === item.차량_번호) setSelectedCar(null);
-    else { setSelectedCar(null); setTimeout(() => setSelectedCar(item), 50); }
+  const downloadExcel = () => {
+    const tableHeaders = ["상태", "구분", "차량번호", "제조사", "모델", "세부모델", "세부트림", "외부색상", "내부색상", "주행거리", "대여료", "보증금"];
+    const csvContent = "\uFEFF" + tableHeaders.join(",");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute("download", "매물리스트_엑셀.csv");
+    link.click();
   };
 
   const handleCopySummary = () => {
@@ -306,132 +390,599 @@ export default function App() {
     const isEV = String(c.차량_연료).includes('전기');
     const evCapacity = getBatteryCapacity(c);
     
-    let text = \`[프리패스모빌리티 상품 상세 정보]\\n\\n\`;
-    text += \`1. 차량 상세 제원\\n• 모델명: \${c.차량_제조사} \${c.차량_모델명} \${c.차량_세부모델}\\n• 차량번호: \${c.차량_번호} (\${c.차량_구분}/\${c.차량_상태})\\n• 주요제원: \${c.차량_연료 || '-'} / \${isEV ? evCapacity : (c.차량_배기량 ? formatPrice(c.차량_배기량) + 'cc' : '-')} / \${formatPrice(c.차량_현재주행거리)}km\\n\\n\`;
-    text += \`2. 대여료 및 보증금 안내\\n\`; 
-    ['36M', '48M', '60M'].forEach(m => {
-      const fee = c[\`금액_대여료_\${m}\`];
-      const dep = c[\`금액_보증금_\${m}\`];
-      if (fee && fee !== '-' && fee !== '0') text += \`• \${formatPeriod(m)}: 월 \${fee}원 / 보증금 \${dep}원\\n\`;
+    let text = `[상품 상세 정보]\n\n`;
+    text += `1. 차량 상세 제원\n`;
+    text += `• 차량번호: ${c.차량_번호} (${c.차량_구분}/${c.차량_상태})\n`;
+    text += `• 모델명: ${c.차량_제조사} ${c.차량_모델명} ${c.차량_세부모델}\n`;
+    text += `• 세부트림: ${c.차량_세부트림}\n`;
+    text += `• 선택옵션: ${c.차량_선택옵션 || '기본 사양'}\n`;
+    text += `• 주요제원: ${c.차량_연료 || '-'} / ${isEV ? evCapacity : (c.차량_배기량 ? formatPrice(c.차량_배기량) + 'cc' : '-')} / ${formatPrice(c.차량_현재주행거리)}km\n`;
+    text += `• 색상(내/외): ${c.차량_내부색상} / ${c.차량_외부색상}\n`;
+    text += `• 차량비고: ${(c.차량_세부상태 || c.차량_비고) ? `${c.차량_세부상태 ? c.차량_세부상태 + ' ' : ''}${c.차량_비고 || ''}` : '입력된 내용이 없습니다.'}\n`;
+    text += `• 차량 실물 사진: ${c.차량_사진링크 || '링크 정보 없음'}\n\n`;
+    text += `2. 대여료 및 보증금 안내 (부가세 포함)\n`; 
+    ['6M', '12M', '24M', '36M', '48M', '60M'].forEach(m => {
+      const fee = c[`금액_대여료_${m}`];
+      const dep = c[`금액_보증금_${m}`];
+      if (fee && fee !== '-' && fee !== '0' && fee !== '0원') {
+        text += `• ${formatPeriod(m)}: 월 대여료 ${fee}원 / 보증금 ${dep}원\n`;
+      }
     });
-    text += \`\\n3. 보험 보상 상세\\n• 자차면책: \${formatDeductible(c.보험_자차면책최소)}\\n\\n\`;
-    text += \`4. 계약 조건\\n• 약정거리: \${c.계약_약정주행거리 || '2만km'}\\n\\n\`;
-    text += \`5. 담당자 정보\\n• 담당자: \${managerInfo.nameTitle || '-'}\\n• 연락처: \${managerInfo.phone || '-'}\`;
+    text += `\n3. 보험 보상 상세\n`;
+    text += `• 대인배상: ${c.보험_대인한도 || '무한'} (면책금: ${formatDeductible(c.보험_대인면책)})\n`;
+    text += `• 대물배상: ${c.보험_대물한도 || '1억원'} (면책금: ${formatDeductible(c.보험_대물면책)})\n`;
+    text += `• 자기신체(자손): ${c.보험_자손한도 || '3천만'} (면책금: ${formatDeductible(c.보험_자손면책)})\n`;
+    text += `• 무보험차 상해: ${c.보험_무보험한도 || '2억원'} (면책금: ${formatDeductible(c.보험_무보험면책)})\n`;
+    text += `• 자기차량(자차): ${c.보험_자차한도 || '차량가액 한도'} (면책금: 수리비의 ${formatPercent(c.보험_자차수리비율)}, 최소 ${formatDeductible(c.보험_자차면책최소)} ~ 최대 ${formatDeductible(c.보험_자차면책최대)})\n`;
+    text += `• 긴급출동: ${c.보험_긴급출동 || '연 5회'}\n\n`;
+    text += `4. 계약 및 추가 비용 조건\n`;
+    text += `• 기본연령: ${c.계약_기본운전연령 || '만 26세 이상'}\n`;
+    text += `• 약정거리: ${c.계약_약정주행거리 || '2만km'}\n`;
+    text += `• 만 21세 연령 하향: ${formatContractOption(c.계약_21세추가금)}\n`;
+    text += `• 만 23세 연령 하향: ${formatContractOption(c.계약_23세추가금)}\n`;
+    text += `• 연간 1만km 거리 추가: ${formatContractOption(c.계약_1만Km추가금)}\n`;
+    text += `• 계약특이사항: ${c.계약_비고 || '입력된 내용이 없습니다.'}\n`;
+    text += `\n5. 담당자 정보\n`;
+    text += `• 소속/담당: ${managerInfo.company || '-'} ${managerInfo.nameTitle || '-'}\n`;
+    text += `• 연락처: ${managerInfo.phone || '-'}\n`;
+    if (managerInfo.includeAccount) {
+      text += `• 입금계좌: ${c.계약_입금계좌번호 || '계좌 정보 미등록'}\n`;
+    }
+    text += `\n* 본 정보는 내부 전산 데이터로 실시간 재고 상황에 따라 변동될 수 있습니다.`;
     
-    const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
-    setCopySuccess(p => ({ ...p, summary: true })); setTimeout(() => setCopySuccess(p => ({ ...p, summary: false })), 2000);
+    copyToClipboard(text);
+    setCopySuccess(p => ({ ...p, summary: true }));
+    setTimeout(() => setCopySuccess(p => ({ ...p, summary: false })), 2000);
+  };
+
+  const copyToClipboard = (text) => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (err) {}
+    document.body.removeChild(ta);
+  };
+
+  const handleCopyAccount = (text) => {
+    if (!text || text === '미등록') return;
+    copyToClipboard(text);
+    setCopySuccess(p => ({ ...p, account: true }));
+    setTimeout(() => setCopySuccess(p => ({ ...p, account: false })), 2000);
+  };
+
+  const handleCarSelect = (item) => {
+    if (selectedCar?.차량_번호 === item.차량_번호) {
+      setSelectedCar(null);
+    } else if (selectedCar) {
+      // 기존 상품 열려있을 때 다른 걸 누르면 즉시 닫고(instant) 찰나의 지연 후 다시 열기
+      setSelectedCar(null);
+      setTimeout(() => {
+        setSelectedCar(item);
+      }, 50); 
+    } else {
+      setSelectedCar(item);
+    }
+  };
+
+  const renderSidebarButton = (id, label) => {
+    const isActive = activeSidebarPopup === id;
+    const isFiltered = id === 'period' ? selectedPeriods.length > 0 : (sidebarFilters[id] || []).length > 0;
+    return (
+      <div key={id} className="relative w-full">
+        <button 
+          onClick={(e) => { e.stopPropagation(); toggleSidebarPopup(id, e); }}
+          className={`w-full h-[40px] flex flex-col items-center justify-center border border-slate-100 tactile-btn ${isActive ? 'tactile-btn-active text-blue-700 bg-slate-50' : 'bg-white text-slate-700'} relative`}
+        >
+          <span className="text-[10px] font-bold tracking-tighter uppercase text-center leading-[1.1]">{label}</span>
+          {isFiltered && <div className="absolute top-1 right-1 w-1.5 h-1.5 bg-blue-600 rounded-full border border-white"></div>}
+        </button>
+      </div>
+    );
   };
 
   return (
     <div className="erp-root overflow-hidden border-none" onContextMenu={(e) => e.preventDefault()}>
       <style>{styles}</style>
       
-      <div id="app" ref={appRef} className="flex h-screen overflow-hidden">
-        {/* 좌측 필터바 (원본 디자인 유지) */}
-        <div className="w-[72px] bg-white border-r border-slate-200 flex flex-col sidebar-elevation">
+      <div id="app" ref={appRef} className="flex h-screen overflow-hidden opacity-100 transition-opacity duration-700">
+        
+        {/* 좌측 필터바 */}
+        <div className="w-[72px] bg-white flex flex-col z-[60] flex-shrink-0 border-r border-slate-200 relative sidebar-elevation">
           <div className="mt-[80px] flex flex-col items-center gap-2 px-1.5">
-            {['기간', '대여료', '보증금', '주행거리', '연식'].map((label, i) => (
-              <button key={i} className="w-full h-[40px] border border-slate-100 tactile-btn bg-white text-[10px] font-bold text-slate-700">{label}</button>
-            ))}
+            {[
+              { id: 'period', label: '기간' },
+              { id: 'rental', label: '대여료' },
+              { id: 'deposit', label: '보증금' },
+              { id: 'mileage', label: '주행거리' },
+              { id: 'year', label: '연식' }
+            ].map(b => renderSidebarButton(b.id, b.label))}
           </div>
-          <div className="mt-auto mb-6 px-1.5"><button className="w-full h-[52px] border border-slate-100 tactile-btn bg-white text-[#1D6F42]"><Download size={16} /></button></div>
+
+          <div className="mt-auto mb-6 flex flex-col items-center px-1.5 w-full">
+            <button 
+              onClick={downloadExcel} 
+              className="w-full h-[52px] flex flex-col items-center justify-center border border-slate-100 tactile-btn bg-white text-[#1D6F42] hover:text-[#155d36] transition-all"
+            >
+              <Download size={16} className="mb-1" />
+              <span className="text-[10px] font-bold uppercase tracking-tighter text-center leading-none">EXCEL</span>
+            </button>
+          </div>
         </div>
 
         {/* 메인 영역 */}
-        <div className="flex-1 flex flex-col min-w-0 relative">
-          <header className="h-[50px] bg-white border-b border-slate-200 flex items-center px-4 gap-4 z-20 shadow-sm">
-            <h1 className="text-[14px] font-black whitespace-nowrap">■ 프리패스모빌리티 ERP</h1>
-            <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="매물 통합 검색..." className="w-full max-w-sm pl-4 py-2 border border-slate-200 text-xs outline-none" />
-            <div className="ml-auto flex items-center gap-4">
-              <span className="text-[11px] font-bold text-slate-400">데이터 연동: <b>{filteredData.length}</b>건</span>
-              <button onClick={() => fetchData(true)} className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-300 font-bold text-[11px]"><RotateCw size={12} className={loading ? 'animate-spin' : ''} /> 데이터 갱신</button>
+        <div className="flex-1 flex flex-col min-w-0 relative" onClick={() => setSelectedCar(null)}>
+          
+          <header className="h-[50px] bg-white border-b border-slate-200 flex items-center px-4 gap-4 flex-shrink-0 z-20 shadow-sm" onClick={(e) => { e.stopPropagation(); setSelectedCar(null); }}>
+            <div className="flex items-center gap-3 flex-1 max-w-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="relative flex-1 max-sm:max-w-xs max-w-sm">
+                <Search size={16} className="absolute left-2.5 top-2.5 text-slate-400" />
+                <input 
+                  type="text" 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="매물 통합 검색..." 
+                  className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-none text-xs focus:outline-none focus:border-slate-400 bg-white" 
+                />
+              </div>
+            </div>
+
+            <div className="ml-auto flex items-center gap-4" onClick={(e) => e.stopPropagation()}>
+              <div className={`transition-all duration-500 bg-blue-600 text-white px-2 py-1 text-[9px] font-bold rounded-sm shadow-sm pointer-events-none ${toastVisible ? 'opacity-100' : 'opacity-0'}`}>
+                데이터 연동이 완료되었습니다
+              </div>
+              
+              <div className="flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></div>
+                <span className="text-[11px] text-slate-400 font-bold uppercase tracking-tighter">데이터 서버 연동 중:</span>
+                <b className="text-slate-800 font-bold text-[11px]">{filteredData.length}</b>
+                <span className="text-slate-500 font-bold">건</span>
+              </div>
+              <div className="h-4 border-l border-slate-200"></div>
+              <button 
+                onClick={() => fetchData(true)} 
+                className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-300 font-bold text-[11px] hover:bg-slate-50 transition-all text-slate-700 rounded-none btn-pressable"
+              >
+                <RotateCw size={12} className={loading ? 'animate-spin' : ''} /> 데이터 갱신
+              </button>
             </div>
           </header>
 
-          <div className="flex-1 overflow-auto bg-white">
-            <table className="w-full border-collapse table-fixed text-[11px]">
-              <thead className="sticky top-0 bg-[#f8f9fb] border-b border-slate-300 z-10 font-bold text-slate-600 uppercase tracking-tighter">
-                <tr className="divide-x divide-slate-200">
-                  {Object.keys(baseColumns).map(label => {
+          {/* 테이블 영역 */}
+          <div className="flex-1 overflow-auto bg-white m-0 relative text-slate-800">
+            <table className="w-full border-collapse text-left text-[11px] table-fixed">
+              <thead className="sticky top-0 bg-[#f8f9fb] border-b border-slate-300 z-40 font-semibold text-slate-600 text-center uppercase tracking-tighter">
+                <tr className="divide-x divide-slate-200" onClick={(e) => e.stopPropagation()}>
+                  {Object.entries(baseColumns).map(([label, dataKey]) => {
+                    const isSorted = sortConfig.key === dataKey;
+                    const isActive = activeFilterColumn === dataKey;
+                    const isFiltered = (columnFilters[dataKey] || []).length > 0;
+                    const isFilterable = filterableColumns.includes(label);
+                    
                     let colWidth = "w-auto";
                     if (label === '상태' || label === '구분') colWidth = "w-[72px]";
                     else if (label === '차량번호') colWidth = "w-[100px]";
+                    else if (label === '제조사') colWidth = "w-[90px]";
+                    else if (label === '모델') colWidth = "w-[110px]";
+                    else if (label === '세부모델') colWidth = "w-[120px]";
                     else if (label === '세부트림') colWidth = "w-[160px]";
-                    return <th key={label} className={\`py-2 \${colWidth}\`}>{label}</th>;
+                    else if (label === '외부색상' || label === '내부색상') colWidth = "w-[85px]";
+                    else if (label === '주행거리') colWidth = "w-[105px]";
+
+                    // [정밀 수정] 세부트림 칸에서 필터 버튼 및 관련 로직 제거
+                    if (label === '세부트림') {
+                        return (
+                          <th key={label} className={`py-1.5 px-1 transition-colors border-b border-slate-200 ${colWidth}`}>
+                            <div className="flex flex-row items-center justify-center gap-1 leading-tight h-full font-bold text-center">
+                              <div className="flex flex-col items-center text-center w-full">
+                                <span className="text-[11px] uppercase">{label}</span>
+                                <span className="text-[9px] opacity-70 font-bold">(선택옵션)</span>
+                              </div>
+                            </div>
+                          </th>
+                        );
+                    }
+
+                    return (
+                      <th key={label} className={`py-1.5 px-1 transition-colors border-b border-slate-200 ${isSorted || isActive ? 'bg-blue-50' : ''} ${colWidth}`}>
+                        <div onClick={(e) => isFilterable && toggleColumnFilter(dataKey, e)} className={`flex flex-row items-center justify-center gap-1 leading-tight h-full relative overflow-hidden ${isFilterable ? 'cursor-pointer' : ''}`}>
+                          <span className={`${isFiltered || isSorted ? 'text-blue-700 font-bold' : ''} truncate text-[11px]`}>{label}</span>
+                          {isFilterable && <Filter size={10} className={isFiltered || isActive ? 'text-blue-700' : 'text-slate-300'} fill={isFiltered ? 'currentColor' : 'none'} />}
+                          {sortableColumns.includes(label) && (
+                            <button onClick={(e) => { e.stopPropagation(); handleSort(dataKey); }} className={`p-0.5 ${isSorted ? 'text-blue-700' : 'text-slate-300'}`}>
+                              {isSorted ? (sortConfig.direction === 'asc' ? <ArrowUp size={10} /> : <ArrowDown size={10} />) : <ArrowUpDown size={10} />}
+                            </button>
+                          )}
+                        </div>
+                      </th>
+                    );
                   })}
-                  <th className="py-2 bg-blue-50 text-blue-800 w-[105px]">36개월 대여료</th>
+                  {selectedPeriods.map(p => {
+                    const isSorted = sortConfig.key === `금액_대여료_${p}`;
+                    return (
+                      <th key={p} className={`py-1.5 px-1 w-[105px] bg-blue-50 border-l border-blue-100 text-blue-800 ${isSorted ? 'bg-blue-100' : ''}`}>
+                        <div className="flex flex-row items-center justify-center gap-1 leading-tight h-full font-bold text-center">
+                          <div className="flex flex-col items-center text-center w-full">
+                            <span className="text-[10px] uppercase">{formatPeriod(p)} 대여료</span>
+                            <span className="text-[9px] opacity-70 font-bold">(보증금)</span>
+                          </div>
+                          <button onClick={() => handleSort(`금액_대여료_${p}`)} className={`p-0.5 ${isSorted ? 'text-blue-700' : 'text-slate-300'}`}>
+                            {isSorted ? (sortConfig.direction === 'asc' ? <ArrowUp size={10} /> : <ArrowDown size={10} />) : <ArrowUpDown size={10} />}
+                          </button>
+                        </div>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-center font-sans text-slate-800">
+              <tbody className="divide-y divide-slate-100 text-center font-sans">
                 {filteredData.map(item => (
-                  <tr key={item.차량_번호} onClick={() => handleCarSelect(item)} className={\`hover:bg-slate-50 cursor-pointer h-[52px] transition-colors \${selectedCar?.차량_번호 === item.차량_번호 ? 'bg-blue-50 font-bold' : ''}\`}>
-                    <td className="p-2">{getStatusBadgeHtml(item.차량_상태, "상태")}</td>
-                    <td className="p-2">{getStatusBadgeHtml(item.차량_구분, "구분")}</td>
-                    <td className="p-2 font-bold text-slate-900">{item.차량_번호}</td>
-                    <td className="p-2">{item.차량_제조사}</td>
-                    <td className="p-2 font-bold text-slate-900">{item.차량_모델명}</td>
-                    <td className="p-2 truncate">{item.차량_세부모델}</td>
-                    <td className="p-2 text-left leading-none"><div className="font-bold">{item.차량_세부트림}</div><div className="text-[9px] text-slate-400 mt-1">{item.차량_선택옵션}</div></td>
-                    <td className="p-2">{item.차량_외부색상}</td>
-                    <td className="p-2">{item.차량_내부색상}</td>
-                    <td className="p-2 text-right px-4 font-bold">{formatPrice(item.차량_현재주행거리)}km</td>
-                    <td className="p-2 bg-blue-50/30 text-blue-800 font-black text-right px-4">{item.금액_대여료_36M}원</td>
+                  <tr 
+                    key={item.차량_번호} 
+                    onClick={(e) => { e.stopPropagation(); handleCarSelect(item); }} 
+                    className={`hover:bg-slate-50 cursor-pointer divide-x divide-slate-50 h-[52px] transition-colors ${selectedCar?.차량_번호 === item.차량_번호 ? 'bg-blue-50 font-bold' : ''}`}
+                  >
+                    <td className="p-2 text-center">{getStatusBadgeHtml(item.차량_상태, "상태")}</td>
+                    <td className="p-2 text-center">{getStatusBadgeHtml(item.차량_구분, "구분")}</td>
+                    <td className="p-2 truncate font-bold text-slate-900">{item.차량_번호 || '-'}</td>
+                    <td className="p-2 truncate text-slate-700 font-medium">{item.차량_제조사 || '-'}</td>
+                    <td className="p-2 truncate font-bold text-slate-900">{item.차량_모델명 || '-'}</td>
+                    <td className="p-2 truncate text-slate-500 text-left font-medium">{item.차량_세부모델 || '-'}</td>
+                    <td className="p-2 text-left leading-none">
+                      <div className="font-bold text-slate-800 truncate">{item.차량_세부트림 || '-'}</div>
+                      <div className="text-slate-400 font-medium text-[9px] truncate mt-1">{item.차량_선택옵션 || '옵션없음'}</div>
+                    </td>
+                    <td className="p-2 truncate text-slate-500 whitespace-nowrap font-medium text-center">{item.차량_외부색상 || '-'}</td>
+                    <td className="p-2 truncate text-slate-500 whitespace-nowrap font-medium text-center">{item.차량_내부색상 || '-'}</td>
+                    <td className="p-2 truncate text-right font-bold text-slate-700 pr-6">{formatPrice(item.차량_현재주행거리)}km</td>
+                    {selectedPeriods.map(p => (
+                      <td key={p} className="p-2 bg-blue-50/30 text-blue-800 font-bold text-right pr-6 leading-none">
+                        <div className="text-[11px]">{item[`금액_대여료_${p}`] || '-'}</div>
+                        <div className="text-slate-400 font-bold text-[9px] mt-1">{item[`금액_보증금_${p}`] || '-'}</div>
+                      </td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
 
-          {/* 상세 페이지 (Drawer) - 5단계 섹션 유지 [cite: 2026-01-27] */}
-          <div className={\`absolute right-0 top-0 h-full w-[440px] bg-white natural-shadow z-[100] flex flex-col border-l border-slate-200 \${selectedCar ? 'translate-x-0 drawer-transition' : 'translate-x-full drawer-instant'}\`}>
+          {/* [정밀 수정] 상세 페이지 Drawer: 열릴 때 자연스럽게(drawer-transition), 닫힐 때 즉시(drawer-instant) */}
+          <div 
+            id="detail-drawer" 
+            onClick={(e) => e.stopPropagation()} 
+            className={`absolute right-0 top-0 h-full w-[440px] bg-white natural-shadow z-[100] flex flex-col border-l border-slate-200 ${selectedCar ? 'translate-x-0 drawer-transition' : 'translate-x-full drawer-instant'}`}
+          >
             {selectedCar && (
-              <div className="flex flex-col h-full">
-                <div className="h-[50px] flex justify-between items-center px-4 bg-white border-b border-slate-100 flex-shrink-0">
-                  <h2 className="font-black text-[12px] uppercase flex items-center gap-2"><Car size={18} /> 상품 상세 정보</h2>
-                  <button onClick={() => setSelectedCar(null)} className="text-slate-400 hover:text-slate-800 p-1"><X size={24} /></button>
+              <div key={selectedCar.차량_번호} className="flex flex-col h-full">
+                <div className="h-[50px] flex justify-between items-center px-4 bg-white border-b border-slate-100 text-slate-800 flex-shrink-0">
+                  <h2 className="font-bold text-[12px] tracking-widest uppercase flex items-center gap-2"><Car size={18} /> 상품 상세 정보</h2>
+                  <button onClick={() => setSelectedCar(null)} className="text-slate-400 hover:text-slate-800 p-1"><X size={20} /></button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-white text-[11px] text-slate-800 hide-scrollbar">
-                  <section className="border border-slate-200 p-3 shadow-sm bg-white tactile-section">
-                    <h3 className="font-black text-blue-700 border-b border-slate-100 pb-2 mb-2 text-[12px]">1. 차량 상세 제원</h3>
-                    <div className="space-y-1.5">
-                      <div className="flex gap-2"><span className="text-slate-400 w-16 font-bold uppercase">모델명</span><span className="font-bold">{selectedCar.차량_제조사} {selectedCar.차량_모델명}</span></div>
-                      <div className="flex gap-2"><span className="text-slate-400 w-16 font-bold uppercase">차량번호</span><span className="font-bold text-blue-600">{selectedCar.차량_번호}</span></div>
-                      <div className="flex gap-2"><span className="text-slate-400 w-16 font-bold uppercase">세부모델</span><span className="font-bold">{selectedCar.차량_세부모델}</span></div>
-                      <button onClick={() => window.open(selectedCar.차량_사진링크, '_blank')} className="w-full py-2.5 mt-2 bg-white border border-slate-300 font-bold text-[10px] uppercase apply-btn-shadow">차량 실물 사진 (링크)</button>
+                  
+                  {/* 1. 차량 상세 제원 */}
+                  <section className="border border-slate-200 bg-white rounded-none overflow-hidden shadow-sm tactile-section">
+                    <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex justify-between items-center">
+                      <span className="font-bold text-[11px] text-slate-600 uppercase tracking-tighter">1. 차량 상세 제원</span>
+                    </div>
+                    <div className="p-3 space-y-3.5">
+                      <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-[12px] text-blue-700 tracking-tight">{selectedCar.차량_번호}</span>
+                          <span className="font-bold text-[12px] text-slate-900">{selectedCar.차량_제조사} {selectedCar.차량_모델명}</span>
+                          <span className="font-medium text-[11px] text-slate-500 uppercase">{selectedCar.차량_연료}</span>
+                        </div>
+                        <div className="flex gap-1 flex-shrink-0">
+                          {getStatusBadgeHtml(selectedCar.차량_구분, "구분")}
+                          {getStatusBadgeHtml(selectedCar.차량_상태, "상태")}
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <div className="flex gap-2 items-start"><span className="text-slate-400 font-bold w-[60px] flex-shrink-0 text-[10px] uppercase">세부모델</span><span className="font-bold text-slate-900">{selectedCar.차량_세부모델}</span></div>
+                        <div className="flex gap-2 items-start"><span className="text-slate-400 font-bold w-[60px] flex-shrink-0 text-[10px] uppercase">세부트림</span><span className="font-bold text-blue-700">{selectedCar.차량_세부트림}</span></div>
+                        <div className="flex gap-2 items-start"><span className="text-slate-400 font-bold w-[60px] flex-shrink-0 text-[10px] uppercase">선택옵션</span><span className="font-medium text-slate-600 leading-tight">{selectedCar.차량_선택옵션 || '장착 정보 없음'}</span></div>
+                        <div className="flex gap-2 items-start"><span className="text-slate-400 font-bold w-[60px] flex-shrink-0 text-[10px] uppercase">외부/내부</span><span className="font-bold text-slate-700">{selectedCar.차량_외부색상} / {selectedCar.차량_내부색상}</span></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 border-t border-slate-100 pt-3">
+                        <div className="flex justify-between items-center"><span className="text-slate-400 font-bold text-[10px] uppercase">주행거리</span><span className="font-bold text-blue-700">{formatPrice(selectedCar.차량_현재주행거리)}km</span></div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 font-bold text-[10px] uppercase">{String(selectedCar.차량_연료).includes('전기') ? '배터리' : '배기량'}</span>
+                          <span className="font-bold">{String(selectedCar.차량_연료).includes('전기') ? getBatteryCapacity(selectedCar) : (selectedCar.차량_배기량 ? formatPrice(selectedCar.차량_배기량)+'cc' : '-')}</span>
+                        </div>
+                        <div className="flex justify-between items-center"><span className="text-slate-400 font-bold text-[10px] uppercase">최초등록</span><span className="font-bold">{selectedCar.차량_최초등록일}</span></div>
+                        <div className="flex justify-between items-center"><span className="text-slate-400 font-bold text-[10px] uppercase">차령만료</span><span className="font-bold text-rose-600">{selectedCar.차령만료일 || '-'}</span></div>
+                        <div className="col-span-2 flex flex-col mt-1 p-2.5 bg-slate-50 border border-slate-100">
+                          <span className="text-slate-400 font-bold text-[9px] uppercase mb-1.5">차량 세부 상태 및 비고</span>
+                          <div className="flex items-start gap-2"><span className="font-medium text-slate-700 leading-relaxed">{(selectedCar.차량_세부상태 || selectedCar.차량_비고) ? `${selectedCar.차량_세부상태 ? selectedCar.차량_세부상태 + ' ' : ''}${selectedCar.차량_비고 || ''}` : '입력된 내용이 없습니다.'}</span></div>
+                        </div>
+                      </div>
+                      <button onClick={() => window.open(selectedCar.차량_사진링크, '_blank')} className="w-full py-3 bg-white border border-slate-300 font-bold text-[10px] uppercase apply-btn-shadow">차량 사진 확인 (링크)</button>
                     </div>
                   </section>
-                  <section className="border border-slate-200 p-3 shadow-sm bg-white tactile-section">
-                    <h3 className="font-black text-blue-700 border-b border-slate-100 pb-2 mb-2 text-[12px]">2. 대여료 정보 (36M/48M/60M)</h3>
-                    <div className="space-y-1 font-bold text-blue-800 text-[13px]">
-                      <div>• 36개월: 월 {selectedCar.금액_대여료_36M}원</div>
-                      <div className="text-slate-400 font-normal text-[11px]">• 보증금: {selectedCar.금액_보증금_36M}원</div>
+
+                  {/* 2. 대여료 및 보증금 안내 */}
+                  <section className="border border-slate-200 bg-white shadow-sm overflow-hidden tactile-section">
+                    <div className="bg-slate-50 px-3 py-2 border-b font-bold text-slate-600 uppercase tracking-tighter">2. 대여료 및 보증금 안내</div>
+                    <table className="w-full text-center text-[11px] border-collapse border-x-0">
+                      <thead className="bg-slate-50 border-b font-bold text-slate-500 uppercase">
+                        <tr><th className="py-2">계약기간</th><th className="py-2 text-blue-800 text-right pr-4">월 대여료</th><th className="py-2 text-right pr-4 text-slate-400">보증금</th></tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-medium">
+                        {['6M', '12M', '24M', '36M', '48M', '60M'].map(m => {
+                          const fee = selectedCar[`금액_대여료_${m}`];
+                          const dep = selectedCar[`금액_보증금_${m}`];
+                          if (!fee || fee === '-' || fee === '0' || fee === '0원') return null;
+                          return (
+                            <tr key={m}>
+                              <td className="py-2 font-bold uppercase">{formatPeriod(m)}</td>
+                              <td className="py-2 text-blue-800 font-bold text-right pr-4">{fee}원</td>
+                              <td className="py-2 text-slate-500 text-right pr-4">{dep}원</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </section>
+
+                  {/* 3. 보험 보상 상세 */}
+                  <section className="border border-slate-200 bg-white rounded-none overflow-hidden shadow-sm tactile-section">
+                    <div className="bg-slate-50 px-3 py-2 border-b font-bold text-slate-600 uppercase tracking-tighter">3. 보험 보상 및 공통 면책 조건</div>
+                    <table className="w-full text-center border-collapse text-[10px] border-x-0">
+                      <thead className="bg-slate-50 font-bold text-slate-400 uppercase border-b">
+                        <tr><th className="py-2 px-2 text-left">보상 항목</th><th className="py-2 px-2 text-center">보상 한도</th><th className="py-2 px-2 text-right pr-4">면책금</th></tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-slate-800 font-bold uppercase tracking-tighter">
+                        <tr><td className="p-2 text-left text-slate-500 font-bold">대인 배상</td><td className="p-2 font-bold text-center">{selectedCar.보험_대인한도 || '무한'}</td><td className="p-2 text-right text-blue-800 pr-4">{formatDeductible(selectedCar.보험_대인면책)}</td></tr>
+                        <tr><td className="p-2 text-left text-slate-500 font-bold">대물 배상</td><td className="p-2 font-bold text-center">{selectedCar.보험_대물한도 || '1억원'}</td><td className="p-2 text-right text-blue-800 pr-4">{formatDeductible(selectedCar.보험_대물면책)}</td></tr>
+                        <tr><td className="p-2 text-left text-slate-500 font-bold">자기신체(자손)</td><td className="p-2 font-bold text-center">{selectedCar.보험_자손한도 || '3천만'}</td><td className="p-2 text-right text-blue-800 pr-4">{formatDeductible(selectedCar.보험_자손면책)}</td></tr>
+                        <tr><td className="p-2 text-left text-slate-500 font-bold">무보험차 상해</td><td className="p-2 font-bold text-center">{selectedCar.보험_무보험한도 || '2억원'}</td><td className="p-2 text-right text-blue-800 pr-4">{formatDeductible(selectedCar.보험_무보험면책)}</td></tr>
+                        <tr className="bg-blue-50/20"><td className="p-2 text-left text-slate-500 font-bold">자기차량(자차)</td><td className="p-2 font-bold text-center">{selectedCar.보험_자차한도 || '차량가액 한도'}</td><td className="p-2 text-right text-rose-700 pr-4">수리비의 {formatPercent(selectedCar.보험_자차수리비율)}, 최소 {formatDeductible(selectedCar.보험_자차면책최소)} ~ 최대 {formatDeductible(selectedCar.보험_자차면책최대)}</td></tr>
+                        <tr><td className="p-2 text-left text-slate-500 font-bold">긴급출동</td><td className="p-2 font-bold text-center">{selectedCar.보험_긴급출동 || '연 5회'}</td><td className="p-2 text-right text-blue-800 pr-4">-</td></tr>
+                      </tbody>
+                    </table>
+                  </section>
+
+                  {/* 4. 계약 정책 */}
+                  <section className="border border-slate-200 bg-white rounded-none overflow-hidden shadow-sm tactile-section">
+                    <div className="bg-slate-50 px-3 py-2 border-b font-bold text-slate-600 uppercase tracking-tighter">4. 계약 정책 및 연령/거리 옵션</div>
+                    <div className="divide-y divide-slate-100">
+                      <div className="grid grid-cols-2 divide-x divide-slate-100">
+                        <div className="p-2.5 flex justify-between items-baseline"><span className="text-slate-400 font-bold text-[9px] uppercase">기본연령</span><span className="font-bold text-slate-800">{selectedCar.계약_기본운전연령 || '만 26세'}</span></div>
+                        <div className="p-2.5 flex justify-between items-baseline"><span className="text-slate-400 font-bold text-[9px] uppercase">약정거리</span><span className="font-bold text-slate-800">{selectedCar.계약_약정주행거리 || '2만km'}</span></div>
+                      </div>
+                      <div className="flex justify-between p-2.5 hover:bg-slate-50 transition-colors">
+                        <span className="text-slate-500 font-bold uppercase">만 21세 연령 하향</span>
+                        <span className={`font-bold ${parseNum(selectedCar.계약_21세추가금) > 0 || String(selectedCar.계약_21세추가금).includes('%') ? 'text-blue-700' : 'text-slate-400 italic'}`}>{formatContractOption(selectedCar.계약_21세추가금)}</span>
+                      </div>
+                      <div className="flex justify-between p-2.5 hover:bg-slate-50 transition-colors">
+                        <span className="text-slate-500 font-bold uppercase">만 23세 연령 하향</span>
+                        <span className={`font-bold ${parseNum(selectedCar.계약_23세추가금) > 0 || String(selectedCar.계약_23세추가금).includes('%') ? 'text-blue-700' : 'text-slate-400 italic'}`}>{formatContractOption(selectedCar.계약_23세추가금)}</span>
+                      </div>
+                      <div className="flex justify-between p-2.5 hover:bg-slate-50 transition-colors">
+                        <span className="text-slate-500 font-bold uppercase">연간 1만km 거리 추가</span>
+                        <span className="font-bold text-blue-700">{formatContractOption(selectedCar.계약_1만Km추가금)}</span>
+                      </div>
+                      <div className="flex flex-col p-2.5 bg-slate-50">
+                        <span className="text-slate-400 font-bold text-[9px] uppercase mb-1.5">계약 관련 특이사항 및 비고</span>
+                        <div className="font-medium text-slate-700 leading-relaxed">{selectedCar.계약_비고 || '입력된 내용이 없습니다.'}</div>
+                      </div>
                     </div>
                   </section>
-                  <section className="border border-slate-200 p-3 shadow-sm bg-white tactile-section">
-                    <h3 className="font-black text-blue-700 border-b border-slate-100 pb-2 mb-2 text-[12px]">3. 보험 정보</h3>
-                    <p className="font-bold">자차 면책: {formatDeductible(selectedCar.보험_자차면책최소)}</p>
-                    <p className="text-slate-400 mt-1">대인/대물 보상한도는 시트 데이터 기본값을 따릅니다.</p>
+
+                  {/* 5. 담당자 및 입금 계좌 */}
+                  <section className="border border-slate-200 bg-white shadow-sm overflow-hidden tactile-section">
+                    <div className="bg-slate-50 px-3 py-2 border-b font-bold text-slate-600 uppercase tracking-tighter">
+                      5. 담당자 및 입금 계좌 안내
+                      <span className="text-slate-400 font-medium text-[9px] ml-2 font-normal">(한번 써놓으면 저장됩니다)</span>
+                    </div>
+                    <div className="p-3 space-y-3 bg-white">
+                      <div className="grid grid-cols-2 gap-2">
+                        <input 
+                          type="text" 
+                          placeholder="소속" 
+                          value={managerInfo.company}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setManagerInfo(p => ({ ...p, company: val }));
+                            if (typeof window !== 'undefined') localStorage.setItem('erp_manager_company', val);
+                          }}
+                          className="p-2.5 border border-slate-200 outline-none font-bold focus:border-slate-800"
+                        />
+                        <input 
+                          type="text" 
+                          placeholder="성명/직책" 
+                          value={managerInfo.nameTitle}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setManagerInfo(p => ({ ...p, nameTitle: val }));
+                            if (typeof window !== 'undefined') localStorage.setItem('erp_manager_nameTitle', val);
+                          }}
+                          className="p-2.5 border border-slate-200 outline-none font-bold focus:border-slate-800"
+                        />
+                        <input 
+                          type="text" 
+                          placeholder="연락처" 
+                          value={managerInfo.phone}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setManagerInfo(p => ({ ...p, phone: val }));
+                            if (typeof window !== 'undefined') localStorage.setItem('erp_manager_phone', val);
+                          }}
+                          className="p-2.5 border border-slate-200 outline-none font-bold focus:border-slate-800 col-span-2"
+                        />
+                      </div>
+                      <div className="pt-2 border-t border-slate-100 space-y-2">
+                        <div className="flex justify-between items-center">
+                          <div 
+                            className="flex-1 p-2.5 bg-slate-50 border border-slate-100 cursor-pointer group active:bg-slate-200 transition-all" 
+                            onClick={() => handleCopyAccount(selectedCar.계약_입금계좌번호)}
+                          >
+                            <div className="flex justify-between items-center mb-1">
+                              <span className="text-slate-400 font-bold text-[8px] uppercase">입금계좌(클릭 시 복사)</span>
+                              <span className={`text-[8px] font-bold text-blue-600 transition-opacity ${copySuccess.account ? 'opacity-100' : 'opacity-0'}`}>복사되었습니다!</span>
+                            </div>
+                            <div className="font-bold text-slate-800 text-[11px] leading-none">{selectedCar.계약_입금계좌번호 || '계좌 정보 미등록'}</div>
+                          </div>
+                          <label className="ml-3 flex items-center gap-1.5 cursor-pointer group whitespace-nowrap">
+                            <span className="font-bold text-slate-500 group-hover:text-blue-700 transition-colors text-[10px]">입금계좌 포함하기</span>
+                            <input 
+                              type="checkbox" 
+                              checked={managerInfo.includeAccount}
+                              onChange={(e) => {
+                                const val = e.target.checked;
+                                setManagerInfo(p => ({ ...p, includeAccount: val }));
+                                if (typeof window !== 'undefined') localStorage.setItem('erp_manager_includeAccount', String(val));
+                              }}
+                              className="w-4 h-4 accent-slate-800" 
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
                   </section>
-                  <section className="border border-slate-200 p-3 shadow-sm bg-white tactile-section">
-                    <h3 className="font-black text-blue-700 border-b border-slate-100 pb-2 mb-2 text-[12px]">4. 계약 정책</h3>
-                    <p className="font-bold">약정거리: {selectedCar.계약_약정주행거리 || '2만km/년'}</p>
-                    <p className="font-bold mt-1">기본연령: {selectedCar.계약_기본운전연령 || '만 26세 이상'}</p>
-                  </section>
-                  <section className="border border-slate-200 p-3 shadow-sm bg-slate-50 space-y-3 tactile-section">
-                    <h3 className="font-black text-blue-700 border-b border-slate-100 pb-2 mb-2 text-[12px]">5. 담당자 정보 안내</h3>
-                    <input value={managerInfo.nameTitle} onChange={(e) => {
-                      const val = e.target.value; setManagerInfo({...managerInfo, nameTitle: val}); localStorage.setItem('erp_manager_nameTitle', val);
-                    }} className="w-full border border-slate-300 p-2 text-[11px] font-bold outline-blue-500" placeholder="담당자 성함/직책 (자동저장)" />
-                    <button onClick={handleCopySummary} className="w-full bg-slate-800 text-white py-3 font-black uppercase tracking-widest apply-btn-shadow flex items-center justify-center gap-2">
-                      <Copy size={16} /> {copySuccess.summary ? '정보가 복사되었습니다!' : '고객 전달용 텍스트 복사'}
-                    </button>
-                  </section>
+                </div>
+                
+                {/* 하단 액션 버튼 */}
+                <div className="p-3 border-t bg-white flex-shrink-0 grid grid-cols-2 gap-3">
+                  <button className="py-3.5 bg-white border border-slate-300 font-black text-[11px] uppercase tracking-widest apply-btn-shadow flex items-center justify-center gap-2 cursor-default">
+                    <Share2 size={16} /> 고객용 링크 (준비중)
+                  </button>
+                  <button 
+                    onClick={handleCopySummary}
+                    className={`py-3.5 text-white font-bold text-[11px] uppercase tracking-widest apply-btn-shadow flex items-center justify-center gap-2 transition-colors ${copySuccess.summary ? 'bg-green-600' : 'bg-slate-800'}`}
+                  >
+                    {copySuccess.summary ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+                    {copySuccess.summary ? '텍스트 복사됨' : '전달용 텍스트'}
+                  </button>
                 </div>
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* 팝업 오버레이 & 필터 팝업 */}
+      {(activeSidebarPopup || activeFilterColumn) && (
+        <div className="fixed inset-0 z-[70] pointer-events-auto" onClick={closeAllPopups}>
+          
+          {/* 사이드바 필터 팝업: 버튼 상단 기준, 하단 범위를 벗어나지 않게 보정 */}
+          {activeSidebarPopup && triggerRect && (() => {
+            const id = activeSidebarPopup;
+            const label = id==='period'?'기간':id==='rental'?'대여료':id==='deposit'?'보증금':id==='mileage'?'주행거리':'연식';
+            const opts = id==='period'?['6M','12M','24M','36M','48M','60M']:id==='rental'?rentalOptions:id==='deposit'?depositOptions:id==='mileage'?mileageOptions:yearOptions;
+            const popupHeight = 310;
+            const topPos = Math.min(triggerRect.top, (typeof window !== 'undefined' ? window.innerHeight : 800) - popupHeight - 10);
+            
+            return (
+              <div 
+                className="absolute bg-white border border-slate-200 natural-shadow z-[100] w-[210px] rounded-none overflow-hidden flex flex-col" 
+                style={{ left: '80px', top: `${topPos}px` }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="p-3 border-b bg-slate-50 flex justify-between items-center">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tighter">{label} 필터</span>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => {
+                        if (id === 'period') setSelectedPeriods(['36M', '48M', '60M']);
+                        else setSidebarFilters(p => ({ ...p, [id]: [] }));
+                      }}
+                      className="text-[10px] text-slate-400 font-bold hover:text-blue-600 transition-colors"
+                    >초기화</button>
+                    <button onClick={closeAllPopups} className="text-slate-400 hover:text-slate-600 transition-colors"><X size={16} /></button>
+                  </div>
+                </div>
+                <div className="max-h-64 overflow-y-auto p-1 hide-scrollbar bg-white">
+                  {opts.map(opt => {
+                    const isSelected = id === 'period' ? selectedPeriods.includes(opt) : (sidebarFilters[id] || []).includes(opt);
+                    return (
+                      <label key={opt} className="flex items-center gap-2.5 p-2.5 hover:bg-slate-50 cursor-pointer transition-colors group text-left">
+                        <input 
+                          type="checkbox" 
+                          checked={isSelected}
+                          onChange={() => {
+                            if (id === 'period') {
+                              const order = ['6M', '12M', '24M', '36M', '48M', '60M'];
+                              let next = selectedPeriods.includes(opt) ? (selectedPeriods.length > 1 ? selectedPeriods.filter(x => x !== opt) : selectedPeriods) : [...selectedPeriods, opt];
+                              setSelectedPeriods(next.sort((a, b) => order.indexOf(a) - order.indexOf(b)));
+                            } else {
+                              const curr = sidebarFilters[id] || [];
+                              setSidebarFilters(p => ({ ...p, [id]: curr.includes(opt) ? curr.filter(x => x !== opt) : [...curr, opt] }));
+                            }
+                          }}
+                          className="w-3.5 h-3.5 accent-slate-800 rounded-none" 
+                        />
+                        <span className={`truncate flex-1 font-bold ${isSelected ? 'text-slate-900' : 'text-slate-500'}`}>
+                          {id==='period' ? formatPeriod(opt) : opt}{ (id==='rental'||id==='deposit') && !opt.includes('만') ? '만원' : ''}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="p-3 border-t bg-slate-50/30">
+                  <button onClick={closeAllPopups} className="w-full py-2.5 bg-white border border-slate-200 text-slate-800 font-bold text-[11px] uppercase tracking-widest apply-btn-shadow">필터 적용</button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* [정밀 수정] 컬럼 헤더 필터 팝업: 제목칸 바로 아래(triggerRect.bottom)에 나오도록 고정 */}
+          {activeFilterColumn && triggerRect && (() => {
+            const dataKey = activeFilterColumn;
+            const label = Object.keys(baseColumns).find(k => baseColumns[k] === dataKey);
+            const counts = rawData.reduce((acc, item) => {
+              const v = String(item[dataKey] || "미정");
+              acc[v] = (acc[v] || 0) + 1;
+              return acc;
+            }, {});
+            const sortedOptions = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+            const leftPos = Math.min(triggerRect.left, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 270);
+
+            return (
+              <div 
+                className="absolute bg-white border border-slate-200 natural-shadow z-[100] w-64 rounded-none overflow-hidden flex flex-col" 
+                style={{ top: `${triggerRect.bottom}px`, left: `${leftPos}px` }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="p-3 border-b bg-slate-50 flex justify-between items-center">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tighter">{label} 필터</span>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => setColumnFilters(p => ({ ...p, [dataKey]: [] }))}
+                      className="text-[10px] text-slate-400 font-bold hover:text-blue-600 transition-colors"
+                    >초기화</button>
+                    <button onClick={closeAllPopups} className="text-slate-400 hover:text-slate-600 transition-colors"><X size={16} /></button>
+                  </div>
+                </div>
+                <div className="max-h-64 overflow-y-auto p-1 bg-white hide-scrollbar">
+                  {sortedOptions.map(([value, count]) => {
+                    const isSelected = (columnFilters[dataKey] || []).includes(value);
+                    return (
+                      <label key={value} className="flex items-center gap-2.5 p-2.5 hover:bg-slate-50 cursor-pointer group transition-colors text-left">
+                        <input 
+                          type="checkbox" 
+                          checked={isSelected}
+                          onChange={() => {
+                            const curr = columnFilters[dataKey] || [];
+                            setColumnFilters(p => ({ ...p, [dataKey]: curr.includes(value) ? curr.filter(x => x !== value) : [...curr, value] }));
+                          }}
+                          className="w-3.5 h-3.5 accent-slate-800 rounded-none" 
+                        />
+                        <span className={`truncate flex-1 font-bold ${isSelected ? 'text-slate-900' : 'text-slate-500'}`}>{value}</span>
+                        <span className="text-slate-400 text-[10px] font-bold ml-auto">{count}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="p-3 border-t bg-slate-50/30">
+                  <button onClick={closeAllPopups} className="w-full py-2.5 bg-white border border-slate-200 text-slate-800 font-bold text-[11px] apply-btn-shadow uppercase tracking-widest">필터 적용</button>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
     </div>
   );
 }
