@@ -175,43 +175,45 @@ export default function App() {
   const [activeFilterColumn, setActiveFilterColumn] = useState(null);
   const [triggerRect, setTriggerRect] = useState(null);
   const [toastVisible, setToastVisible] = useState(false);
-  
-  // 빌드 타임 안전성을 위한 초기 정보 설정
   const [managerInfo, setManagerInfo] = useState({
-    company: (typeof window !== 'undefined' ? localStorage.getItem('erp_manager_company') : '') || '',
-    nameTitle: (typeof window !== 'undefined' ? localStorage.getItem('erp_manager_nameTitle') : '') || '',
-    phone: (typeof window !== 'undefined' ? localStorage.getItem('erp_manager_phone') : '') || '',
-    includeAccount: (typeof window !== 'undefined' ? localStorage.getItem('erp_manager_includeAccount') === 'true' : false)
+    company: localStorage.getItem('erp_manager_company') || '',
+    nameTitle: localStorage.getItem('erp_manager_nameTitle') || '',
+    phone: localStorage.getItem('erp_manager_phone') || '',
+    includeAccount: localStorage.getItem('erp_manager_includeAccount') === 'true'
   });
   const [copySuccess, setCopySuccess] = useState({ link: false, summary: false, account: false });
 
   // Refs
   const appRef = useRef(null);
 
-  // Initialize Firebase (빌드 시 window 객체 체크)
+  // Initialize Firebase (Error Handling Added for Build Safety)
   useEffect(() => {
-    const firebaseConfigStr = typeof window !== 'undefined' ? window.__firebase_config : null;
+    const firebaseConfigStr = window.__firebase_config;
     if (firebaseConfigStr) {
-      const firebaseConfig = typeof firebaseConfigStr === 'string' ? JSON.parse(firebaseConfigStr) : firebaseConfigStr;
-      const app = initializeApp(firebaseConfig);
-      const auth = getAuth(app);
-      
-      const initAuth = async () => {
-        const authToken = typeof window !== 'undefined' ? window.__initial_auth_token : null;
-        if (authToken) {
-          await signInWithCustomToken(auth, authToken);
-        } else {
-          await signInAnonymously(auth);
-        }
-      };
+      try {
+        const firebaseConfig = JSON.parse(firebaseConfigStr);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        
+        const initAuth = async () => {
+          if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
+            await signInWithCustomToken(auth, window.__initial_auth_token);
+          } else {
+            await signInAnonymously(auth);
+          }
+        };
 
-      onAuthStateChanged(auth, (user) => {
-        if (user) {
-          fetchData(false);
-        } else {
-          initAuth();
-        }
-      });
+        onAuthStateChanged(auth, (user) => {
+          if (user) {
+            fetchData(false);
+          } else {
+            initAuth();
+          }
+        });
+      } catch (e) {
+        console.error("Firebase 초기화 오류", e);
+        fetchData(false);
+      }
     } else {
       fetchData(false);
     }
@@ -261,8 +263,13 @@ export default function App() {
         matchesRental = sidebarFilters.rental.some(range => {
           if (range === '50만 이하') return val <= 500000;
           if (range === '100만 이상') return val >= 1000000;
-          const [low, high] = range.split('~').map(s => parseInt(s) * 10000);
-          return val >= low && val < high;
+          const parts = range.split('~');
+          if (parts.length === 2) {
+            const low = parseInt(parts[0]) * 10000;
+            const high = parseInt(parts[1]) * 10000;
+            return val >= low && val < high;
+          }
+          return false;
         });
       }
 
@@ -273,8 +280,13 @@ export default function App() {
         matchesDeposit = sidebarFilters.deposit.some(range => {
           if (range === '100만 이하') return val <= 1000000;
           if (range === '500만 이상') return val >= 5000000;
-          const [low, high] = range.split('~').map(s => parseInt(s) * 10000);
-          return val >= low && val < high;
+          const parts = range.split('~');
+          if (parts.length === 2) {
+            const low = parseInt(parts[0]) * 10000;
+            const high = parseInt(parts[1]) * 10000;
+            return val >= low && val < high;
+          }
+          return false;
         });
       }
 
@@ -374,6 +386,15 @@ export default function App() {
     link.click();
   };
 
+  const copyToClipboard = (text) => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (err) {}
+    document.body.removeChild(ta);
+  };
+
   const handleCopySummary = () => {
     if (!selectedCar) return;
     const c = selectedCar;
@@ -425,35 +446,11 @@ export default function App() {
     setTimeout(() => setCopySuccess(p => ({ ...p, summary: false })), 2000);
   };
 
-  const copyToClipboard = (text) => {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy'); } catch (err) {}
-    document.body.removeChild(ta);
-  };
-
   const handleCopyAccount = (text) => {
     if (!text || text === '미등록') return;
     copyToClipboard(text);
     setCopySuccess(p => ({ ...p, account: true }));
     setTimeout(() => setCopySuccess(p => ({ ...p, account: false })), 2000);
-  };
-
-  // [정밀 수정] 차량 클릭 핸들러: 기존 거 확 사라지고(duration-0) 새 거 다시 나오는 느낌 연출
-  const handleCarSelect = (item) => {
-    if (selectedCar?.차량_번호 === item.차량_번호) {
-      setSelectedCar(null);
-    } else if (selectedCar) {
-      // 기존 상품이 열려있을 때 다른 걸 누르면 즉시 닫고(null) 찰나의 지연 후 다시 열기
-      setSelectedCar(null);
-      setTimeout(() => {
-        setSelectedCar(item);
-      }, 20); // 20ms의 짧은 공백이 '전환' 느낌을 확실히 줌
-    } else {
-      setSelectedCar(item);
-    }
   };
 
   // Render Helpers
@@ -491,7 +488,6 @@ export default function App() {
             ].map(b => renderSidebarButton(b.id, b.label))}
           </div>
 
-          {/* 엑셀 다운로드 버튼 (하단) */}
           <div className="mt-auto mb-6 flex flex-col items-center px-1.5 w-full">
             <button 
               onClick={downloadExcel} 
@@ -541,7 +537,6 @@ export default function App() {
             </div>
           </header>
 
-          {/* 테이블 영역 */}
           <div className="flex-1 overflow-auto bg-white m-0 relative text-slate-800">
             <table className="w-full border-collapse text-left text-[11px] table-fixed">
               <thead className="sticky top-0 bg-[#f8f9fb] border-b border-slate-300 z-40 font-bold text-slate-600 text-center uppercase tracking-tighter">
@@ -562,7 +557,6 @@ export default function App() {
                     else if (label === '외부색상' || label === '내부색상') colWidth = "w-[85px]";
                     else if (label === '주행거리') colWidth = "w-[105px]";
 
-                    // 세부트림 헤더를 대여료 헤더 스타일과 동일하게 처리
                     if (label === '세부트림') {
                         return (
                           <th key={label} className={`py-2 px-1 relative transition-colors border-b border-slate-200 ${isActive ? 'bg-blue-50' : ''} ${colWidth}`}>
@@ -621,7 +615,7 @@ export default function App() {
                 {filteredData.map(item => (
                   <tr 
                     key={item.차량_번호} 
-                    onClick={(e) => { e.stopPropagation(); handleCarSelect(item); }} 
+                    onClick={(e) => { e.stopPropagation(); setSelectedCar(item); }} 
                     className={`hover:bg-slate-50 cursor-pointer divide-x divide-slate-50 h-[52px] transition-colors ${selectedCar?.차량_번호 === item.차량_번호 ? 'bg-blue-50 font-bold' : ''}`}
                   >
                     <td className="p-2 text-center">{getStatusBadgeHtml(item.차량_상태, "상태")}</td>
@@ -649,12 +643,11 @@ export default function App() {
             </table>
           </div>
 
-          {/* 상세 페이지 Drawer: 닫힐 때duration-0(확 사라짐), 열릴 때duration-300(새롭게 나옴), key적용(즉시 갱신) */}
+          {/* 상세 페이지 Drawer */}
           <div 
             id="detail-drawer" 
-            key={selectedCar?.차량_번호 || 'empty'}
             onClick={(e) => e.stopPropagation()} 
-            className={`absolute right-0 top-0 h-full w-[440px] bg-white natural-shadow z-[100] flex flex-col border-l border-slate-200 transition-transform ${selectedCar ? 'translate-x-0 duration-300 ease-out' : 'translate-x-full duration-0'}`}
+            className={`absolute right-0 top-0 h-full w-[440px] bg-white natural-shadow z-[100] flex flex-col border-l border-slate-200 transition-transform duration-300 ${selectedCar ? 'translate-x-0' : 'translate-x-full'}`}
           >
             {selectedCar && (
               <>
@@ -664,7 +657,7 @@ export default function App() {
                 </div>
                 <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-white text-[11px] text-slate-800 hide-scrollbar">
                   
-                  {/* 1. 차량 상세 제원 */}
+                  {/* 1. 차량 상세 제원 [cite: 2026-01-27] */}
                   <section className="border border-slate-200 bg-white rounded-none overflow-hidden shadow-sm tactile-section">
                     <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex justify-between items-center">
                       <span className="font-bold text-[11px] text-slate-600 uppercase tracking-tighter">1. 차량 상세 제원</span>
@@ -704,7 +697,7 @@ export default function App() {
                     </div>
                   </section>
 
-                  {/* 2. 대여료 및 보증금 안내 */}
+                  {/* 2. 대여료 및 보증금 안내 [cite: 2026-01-27] */}
                   <section className="border border-slate-200 bg-white shadow-sm overflow-hidden tactile-section">
                     <div className="bg-slate-50 px-3 py-2 border-b font-bold text-slate-600 uppercase tracking-tighter">2. 대여료 및 보증금 안내</div>
                     <table className="w-full text-center text-[11px] border-collapse border-x-0">
@@ -728,7 +721,7 @@ export default function App() {
                     </table>
                   </section>
 
-                  {/* 3. 보험 보상 상세 */}
+                  {/* 3. 보험 보상 상세 [cite: 2026-01-27] */}
                   <section className="border border-slate-200 bg-white rounded-none overflow-hidden shadow-sm tactile-section">
                     <div className="bg-slate-50 px-3 py-2 border-b font-bold text-slate-600 uppercase tracking-tighter">3. 보험 보상 및 공통 면책 조건</div>
                     <table className="w-full text-center border-collapse text-[10px] border-x-0">
@@ -746,7 +739,7 @@ export default function App() {
                     </table>
                   </section>
 
-                  {/* 4. 계약 정책 */}
+                  {/* 4. 계약 정책 [cite: 2026-01-27] */}
                   <section className="border border-slate-200 bg-white rounded-none overflow-hidden shadow-sm tactile-section">
                     <div className="bg-slate-50 px-3 py-2 border-b font-bold text-slate-600 uppercase tracking-tighter">4. 계약 정책 및 연령/거리 옵션</div>
                     <div className="divide-y divide-slate-100">
@@ -773,11 +766,11 @@ export default function App() {
                     </div>
                   </section>
 
-                  {/* 5. 담당자 및 입금 계좌 */}
+                  {/* 5. 담당자 및 입금 계좌 [cite: 2026-01-27] */}
                   <section className="border border-slate-200 bg-white shadow-sm overflow-hidden tactile-section">
                     <div className="bg-slate-50 px-3 py-2 border-b font-bold text-slate-600 uppercase tracking-tighter">
                       5. 담당자 및 입금 계좌 안내
-                      <span className="text-slate-400 font-medium text-[9px] ml-2 font-normal">(한번 써놓으면 저장됩니다)</span>
+                      <span className="text-slate-400 font-medium text-[9px] ml-2 font-normal">(자동 저장됩니다)</span>
                     </div>
                     <div className="p-3 space-y-3 bg-white">
                       <div className="grid grid-cols-2 gap-2">
@@ -788,7 +781,7 @@ export default function App() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setManagerInfo(p => ({ ...p, company: val }));
-                            if (typeof window !== 'undefined') localStorage.setItem('erp_manager_company', val);
+                            localStorage.setItem('erp_manager_company', val);
                           }}
                           className="p-2.5 border border-slate-200 outline-none font-bold focus:border-slate-800"
                         />
@@ -799,7 +792,7 @@ export default function App() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setManagerInfo(p => ({ ...p, nameTitle: val }));
-                            if (typeof window !== 'undefined') localStorage.setItem('erp_manager_nameTitle', val);
+                            localStorage.setItem('erp_manager_nameTitle', val);
                           }}
                           className="p-2.5 border border-slate-200 outline-none font-bold focus:border-slate-800"
                         />
@@ -810,7 +803,7 @@ export default function App() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setManagerInfo(p => ({ ...p, phone: val }));
-                            if (typeof window !== 'undefined') localStorage.setItem('erp_manager_phone', val);
+                            localStorage.setItem('erp_manager_phone', val);
                           }}
                           className="p-2.5 border border-slate-200 outline-none font-bold focus:border-slate-800 col-span-2"
                         />
@@ -828,14 +821,14 @@ export default function App() {
                             <div className="font-bold text-slate-800 text-[11px] leading-none">{selectedCar.계약_입금계좌번호 || '계좌 정보 미등록'}</div>
                           </div>
                           <label className="ml-3 flex items-center gap-1.5 cursor-pointer group whitespace-nowrap">
-                            <span className="font-bold text-slate-500 group-hover:text-blue-700 transition-colors text-[10px]">입금계좌 포함하기</span>
+                            <span className="font-bold text-slate-500 group-hover:text-blue-700 transition-colors text-[10px]">입금계좌 포함</span>
                             <input 
                               type="checkbox" 
                               checked={managerInfo.includeAccount}
                               onChange={(e) => {
                                 const val = e.target.checked;
                                 setManagerInfo(p => ({ ...p, includeAccount: val }));
-                                if (typeof window !== 'undefined') localStorage.setItem('erp_manager_includeAccount', String(val));
+                                localStorage.setItem('erp_manager_includeAccount', String(val));
                               }}
                               className="w-4 h-4 accent-slate-800" 
                             />
@@ -846,9 +839,8 @@ export default function App() {
                   </section>
                 </div>
                 
-                {/* 하단 액션 버튼 */}
                 <div className="p-3 border-t bg-white flex-shrink-0 grid grid-cols-2 gap-3">
-                  <button className="py-3.5 bg-white border border-slate-300 font-black text-[11px] uppercase tracking-widest apply-btn-shadow flex items-center justify-center gap-2 cursor-default">
+                  <button className="py-3.5 bg-white border border-slate-300 text-slate-400 font-bold text-[11px] uppercase tracking-widest apply-btn-shadow flex items-center justify-center gap-2 cursor-default">
                     <Share2 size={16} /> 고객용 링크 (준비중)
                   </button>
                   <button 
@@ -865,17 +857,15 @@ export default function App() {
         </div>
       </div>
 
-      {/* 팝업 오버레이 & 필터 팝업 */}
       {(activeSidebarPopup || activeFilterColumn) && (
         <div className="fixed inset-0 z-[70] pointer-events-auto" onClick={closeAllPopups}>
           
-          {/* 사이드바 필터 팝업: 버튼 상단 기준, 하단 범위를 벗어나지 않게 보정 */}
           {activeSidebarPopup && triggerRect && (() => {
             const id = activeSidebarPopup;
             const label = id==='period'?'기간':id==='rental'?'대여료':id==='deposit'?'보증금':id==='mileage'?'주행거리':'연식';
             const opts = id==='period'?['6M','12M','24M','36M','48M','60M']:id==='rental'?rentalOptions:id==='deposit'?depositOptions:id==='mileage'?mileageOptions:yearOptions;
             const popupHeight = 310;
-            const topPos = Math.min(triggerRect.top, (typeof window !== 'undefined' ? window.innerHeight : 800) - popupHeight - 10);
+            const topPos = Math.min(triggerRect.top, window.innerHeight - popupHeight - 10);
             
             return (
               <div 
@@ -930,7 +920,6 @@ export default function App() {
             );
           })()}
 
-          {/* 컬럼 헤더 필터 팝업: 제목 필터 좌측 기준 정렬 */}
           {activeFilterColumn && triggerRect && (() => {
             const dataKey = activeFilterColumn;
             const label = Object.keys(baseColumns).find(k => baseColumns[k] === dataKey);
@@ -940,7 +929,7 @@ export default function App() {
               return acc;
             }, {});
             const sortedOptions = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-            const leftPos = Math.min(triggerRect.left, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 270);
+            const leftPos = Math.min(triggerRect.left, window.innerWidth - 270);
 
             return (
               <div 
